@@ -1,0 +1,14 @@
+[package]
+name = "elwa-dc"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+dummy = []
+
+[dependencies]
+axum = "0.6.20"
+base64 = "0.21.5"
+log = "0.4.20"
+serialport = "4.2.2"
+tokio = { version = "1.34.0", features = ["full"] }
