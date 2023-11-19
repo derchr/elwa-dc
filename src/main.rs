@@ -1,4 +1,10 @@
-use axum::{response::Html, routing::get, Router};
+use anyhow::Context;
+use axum::{
+    http::StatusCode,
+    response::{Html, IntoResponse, Response},
+    routing::get,
+    Router,
+};
 use strum::{EnumIter, IntoEnumIterator};
 
 #[derive(EnumIter, Debug)]
@@ -68,6 +74,27 @@ struct Status<'a> {
     seriennummer: &'a str,
 }
 
+struct AppError(anyhow::Error);
+
+impl IntoResponse for AppError {
+    fn into_response(self) -> Response {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Internal Server Error:\n{:?}", self.0),
+        )
+            .into_response()
+    }
+}
+
+impl<E> From<E> for AppError
+where
+    E: Into<anyhow::Error>,
+{
+    fn from(err: E) -> Self {
+        Self(err.into())
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let app = Router::new().route("/", get(handler));
@@ -78,10 +105,10 @@ async fn main() {
         .unwrap();
 }
 
-async fn handler() -> Html<String> {
+async fn handler() -> Result<Html<String>, AppError> {
     log::info!("Fetch new data");
 
-    let data = read_device();
+    let data = read_device().context("Could not retrieve device data")?;
     let data_string = std::str::from_utf8(&data).unwrap();
 
     let mut status = Status::default();
@@ -127,7 +154,7 @@ async fn handler() -> Html<String> {
         }
     }
 
-    Html(format!(
+    Ok(Html(format!(
         include_str!("index.html"),
         status.wassertemp,
         status.wassertemp_min,
@@ -149,32 +176,34 @@ async fn handler() -> Html<String> {
         status.betriebstag,
         status.firmware,
         status.seriennummer,
-    ))
+    )))
 }
 
 #[cfg(not(feature = "dummy"))]
-fn read_device() -> Vec<u8> {
+fn read_device() -> anyhow::Result<Vec<u8>> {
     use std::io::{BufRead, BufReader};
     use std::time::Duration;
 
     let mut port = serialport::new("/dev/ttyUSB0", 9600)
-        .timeout(Duration::from_secs(5))
+        .timeout(Duration::from_millis(100))
         .open()
-        .expect("Failed to open port");
+        .context("Could not open serial device port")?;
 
-    write!(&mut port, "rs\r\n").expect("Write failed!");
+    write!(&mut port, "rs\r\n").context("Could not write to serial connection")?;
 
     let mut reader = BufReader::new(port);
 
     let mut data: Vec<u8> = Vec::new();
-    reader.read_until(b'\n', &mut data).expect("Found no data!");
+    reader
+        .read_until(b'\n', &mut data)
+        .context("Could not read from serial connection")?;
 
-    data
+    Ok(data)
 }
 
 #[cfg(feature = "dummy")]
-fn read_device() -> Vec<u8> {
+fn read_device() -> anyhow::Result<Vec<u8>> {
     use base64::{engine::general_purpose, Engine as _};
     const SAMPLE_OUTPUT: &str = "ZHIJVjEuMzEJMzUJMTIJMQkxCTEJMjM1CTE3NQkyNDUJNzU5CTY1MAkyNQk5MAkxODkuNQkxOTAuMDMJMS4xNDM1CTIxNy4yOQk3NzgJOTE3MjUJMAktNwk3LjkJNTI1CTM2OAkzNTgJMjQwCTEJMTIwMTAwMjMwMjEwMDAyMwk3NTkJNg0K";
-    general_purpose::STANDARD.decode(SAMPLE_OUTPUT).unwrap()
+    Ok(general_purpose::STANDARD.decode(SAMPLE_OUTPUT)?)
 }
