@@ -14,3 +14,4 @@ log = "0.4.20"
 serialport = "4.2.2"
 strum = { version = "0.25.0", features = ["derive"] }
 tokio = { version = "1.34.0", features = ["full"] }
+uom = "0.35.0"

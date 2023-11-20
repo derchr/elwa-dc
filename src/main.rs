@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use anyhow::Context;
 use axum::{
     http::StatusCode,
@@ -6,8 +8,19 @@ use axum::{
     Router,
 };
 use strum::{EnumIter, IntoEnumIterator};
+use uom::{
+    fmt::DisplayStyle::Abbreviation,
+    si::{
+        electric_current::ampere,
+        electric_potential::volt,
+        energy::{kilowatt_hour, watt_hour},
+        f32::*,
+        power::{kilowatt, watt},
+        thermodynamic_temperature::degree_celsius,
+    },
+};
 
-#[derive(EnumIter, Debug)]
+#[derive(EnumIter, PartialEq, Eq, Hash, Debug)]
 enum StatusTag {
     Dummy0,
     Firmware,
@@ -41,28 +54,28 @@ enum StatusTag {
     Dummy13,
 }
 
-#[derive(Default, Debug)]
+#[derive(Debug)]
 struct Status<'a> {
     // Wasser
-    wassertemp: f32,
-    wassertemp_min: f32,
-    wassertemp_max: f32,
-    solltemp_solar: f32,
-    solltemp_netz: f32,
+    wassertemp: ThermodynamicTemperature,
+    wassertemp_min: ThermodynamicTemperature,
+    wassertemp_max: ThermodynamicTemperature,
+    solltemp_solar: ThermodynamicTemperature,
+    solltemp_netz: ThermodynamicTemperature,
 
     // Solar aktuell
-    solarspannung: f32,
-    solarstrom: f32,
-    solarleistung: f32,
+    solarspannung: ElectricPotential,
+    solarstrom: ElectricCurrent,
+    solarleistung: Power,
 
     // Historie
-    solarenergie_heute: f32,
-    solarenergie_gesamt: f32,
-    netzenergie_heute: f32,
+    solarenergie_heute: Energy,
+    solarenergie_gesamt: Energy,
+    netzenergie_heute: Energy,
 
     // Zustand
     iso_messung: u32,
-    geraetetemp: u32,
+    geraetetemp: ThermodynamicTemperature,
     status: u32,
     dc_trenner: bool,
     dc_relais: bool,
@@ -111,64 +124,80 @@ async fn handler() -> Result<Html<String>, AppError> {
     let data = read_device().context("Could not retrieve device data")?;
     let data_string = std::str::from_utf8(&data).unwrap();
 
-    let mut status = Status::default();
-    for (value, tag) in data_string.split('\t').zip(StatusTag::iter()) {
-        match tag {
-            StatusTag::Firmware => status.firmware = value,
-            StatusTag::Betriebstag => status.betriebstag = str::parse(value).unwrap(),
-            StatusTag::Status => status.status = str::parse(value).unwrap(),
-            StatusTag::DcTrenner => status.dc_trenner = str::parse::<u8>(value).unwrap() != 0,
-            StatusTag::DcRelais => status.dc_relais = str::parse::<u8>(value).unwrap() != 0,
-            StatusTag::AcRelais => status.ac_relais = str::parse::<u8>(value).unwrap() != 0,
-            StatusTag::Wassertemp => status.wassertemp = str::parse::<f32>(value).unwrap() / 10.0,
-            StatusTag::WassertempMin => {
-                status.wassertemp_min = str::parse::<f32>(value).unwrap() / 10.0
-            }
-            StatusTag::WassertempMax => {
-                status.wassertemp_max = str::parse::<f32>(value).unwrap() / 10.0
-            }
-            StatusTag::SolltempSolar => {
-                status.solltemp_solar = str::parse::<f32>(value).unwrap() / 10.0
-            }
-            StatusTag::SolltempNetz => {
-                status.solltemp_netz = str::parse::<f32>(value).unwrap() / 10.0
-            }
-            StatusTag::GeraeteTemp => status.geraetetemp = str::parse(value).unwrap(),
-            StatusTag::IsoMessung => status.iso_messung = str::parse(value).unwrap(),
-            StatusTag::Solarspannung => status.solarspannung = str::parse::<f32>(value).unwrap(),
-            StatusTag::Solarstrom => status.solarstrom = str::parse::<f32>(value).unwrap(),
-            StatusTag::Solarleistung => {
-                status.solarleistung = str::parse::<f32>(value).unwrap() / 1000.0
-            }
-            StatusTag::SolarenergieHeute => {
-                status.solarenergie_heute = str::parse::<f32>(value).unwrap() / 1000.0
-            }
-            StatusTag::SolarenergieGesamt => {
-                status.solarenergie_gesamt = str::parse::<f32>(value).unwrap() / 1000.0
-            }
-            StatusTag::NetzenergieHeute => {
-                status.netzenergie_heute = str::parse::<f32>(value).unwrap() / 1000.0
-            }
-            StatusTag::Seriennummer => status.seriennummer = value,
-            _ => (),
-        }
-    }
+    let status_map = StatusTag::iter()
+        .zip(data_string.split('\t'))
+        .collect::<HashMap<StatusTag, &str>>();
+
+    let status = Status {
+        wassertemp: ThermodynamicTemperature::new::<degree_celsius>(
+            status_map[&StatusTag::Wassertemp].parse::<f32>()? / 10.0,
+        ),
+        wassertemp_min: ThermodynamicTemperature::new::<degree_celsius>(
+            status_map[&StatusTag::WassertempMin].parse::<f32>()? / 10.0,
+        ),
+        wassertemp_max: ThermodynamicTemperature::new::<degree_celsius>(
+            status_map[&StatusTag::WassertempMax].parse::<f32>()? / 10.0,
+        ),
+        solltemp_solar: ThermodynamicTemperature::new::<degree_celsius>(
+            status_map[&StatusTag::SolltempSolar].parse::<f32>()? / 10.0,
+        ),
+        solltemp_netz: ThermodynamicTemperature::new::<degree_celsius>(
+            status_map[&StatusTag::SolltempNetz].parse::<f32>()? / 10.0,
+        ),
+        solarspannung: ElectricPotential::new::<volt>(
+            status_map[&StatusTag::Solarspannung].parse()?,
+        ),
+        solarstrom: ElectricCurrent::new::<ampere>(status_map[&StatusTag::Solarstrom].parse()?),
+        solarleistung: Power::new::<watt>(status_map[&StatusTag::Solarleistung].parse()?),
+        solarenergie_heute: Energy::new::<watt_hour>(
+            status_map[&StatusTag::SolarenergieHeute].parse()?,
+        ),
+        solarenergie_gesamt: Energy::new::<watt_hour>(
+            status_map[&StatusTag::SolarenergieGesamt].parse()?,
+        ),
+        netzenergie_heute: Energy::new::<watt_hour>(
+            status_map[&StatusTag::NetzenergieHeute].parse()?,
+        ),
+        iso_messung: status_map[&StatusTag::IsoMessung].parse()?,
+        geraetetemp: ThermodynamicTemperature::new::<degree_celsius>(
+            status_map[&StatusTag::GeraeteTemp].parse()?,
+        ),
+        status: status_map[&StatusTag::Status].parse()?,
+        dc_trenner: status_map[&StatusTag::DcTrenner].parse::<u8>()? != 0,
+        dc_relais: status_map[&StatusTag::DcRelais].parse::<u8>()? != 0,
+        ac_relais: status_map[&StatusTag::AcRelais].parse::<u8>()? != 0,
+        betriebstag: status_map[&StatusTag::Betriebstag].parse()?,
+        firmware: status_map[&StatusTag::Firmware],
+        seriennummer: status_map[&StatusTag::Seriennummer],
+    };
+
+    let w = Power::format_args(watt, Abbreviation);
+    let kw = Power::format_args(kilowatt, Abbreviation);
+    let wh = Energy::format_args(watt_hour, Abbreviation);
+    let kwh = Energy::format_args(kilowatt_hour, Abbreviation);
+    let v = ElectricPotential::format_args(volt, Abbreviation);
+    let a = ElectricCurrent::format_args(ampere, Abbreviation);
+    let c = ThermodynamicTemperature::format_args(degree_celsius, Abbreviation);
 
     Ok(Html(format!(
         include_str!("index.html"),
-        status.wassertemp,
-        status.wassertemp_min,
-        status.wassertemp_max,
-        status.solltemp_solar,
-        status.solltemp_netz,
-        status.solarspannung,
-        status.solarstrom,
-        status.solarleistung,
-        status.solarenergie_heute,
-        status.solarenergie_gesamt,
-        status.netzenergie_heute,
+        c.with(status.wassertemp),
+        c.with(status.wassertemp_min),
+        c.with(status.wassertemp_max),
+        c.with(status.solltemp_solar),
+        c.with(status.solltemp_netz),
+        v.with(status.solarspannung),
+        a.with(status.solarstrom),
+        kw.with(status.solarleistung),
+        w.with(status.solarleistung),
+        kwh.with(status.solarenergie_heute),
+        wh.with(status.solarenergie_heute),
+        kwh.with(status.solarenergie_gesamt),
+        wh.with(status.solarenergie_gesamt),
+        kwh.with(status.netzenergie_heute),
+        wh.with(status.netzenergie_heute),
         status.iso_messung,
-        status.geraetetemp,
+        c.with(status.geraetetemp),
         status.status,
         status.dc_trenner,
         status.dc_relais,
